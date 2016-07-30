@@ -79,7 +79,7 @@ class DeepQ:
         last100Filled = False
 
         if experimentId != None:
-            self.env.monitor.start(experimentId, force = force)
+            self.env.monitor.start('tmp/'+experimentId, force = force)
 
         for epoch in xrange(epochs):
             observation = self.env.reset()
