@@ -70,13 +70,12 @@ class DeepQ:
             experimentId = defaultRunSettings['experimentId'], 
             force = defaultRunSettings['force'], 
             upload = defaultRunSettings['upload']):
-
-        self.learnStart = learnStart
-
-        stepCounter = 0
+    
         last100Scores = [0] * 100
         last100ScoresIndex = 0
         last100Filled = False
+
+        stepCounter = 0
 
         if experimentId != None:
             self.env.monitor.start('tmp/'+experimentId, force = force)
@@ -99,7 +98,7 @@ class DeepQ:
 
                 self.addMemory(observation, action, reward, newObservation, done)
 
-                if stepCounter >= self.learnStart:
+                if stepCounter >= learnStart:
                     if stepCounter <= updateTargetNetwork:
                         self.learnOnMiniBatch(miniBatchSize, False)
                     else :
@@ -133,51 +132,21 @@ class DeepQ:
             gym.upload('/tmp/'+experimentId, api_key=api_key)
    
     def initNetworks(self, hiddenLayers):
-        model = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
-        self.model = model
-
-        targetModel = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
-        self.targetModel = targetModel
-
-    def createConvolutionalModel(self, inputs, outputs, hiddenLayers, activationType, learningRate):
-        model = Sequential()
-        if len(hiddenLayers) == 0: 
-            model.add(Dense(self.output_size, input_shape=(self.input_size,), init='lecun_uniform'))
-            model.add(Activation("linear"))
-        else :
-            model.add(Convolution1D(nb_filter=hiddenLayers[0], filter_length=3, border_mode='same', input_dim=self.input_size, init='lecun_uniform'))
-            if (activationType == "LeakyReLU") :
-                model.add(LeakyReLU(alpha=0.01))
-            else :
-                model.add(Activation(activationType))
-            
-            for index in range(1, len(hiddenLayers)-1):
-                layerSize = hiddenLayers[index]
-                model.add(Convolution1D(nb_filter=hiddenLayers[index], filter_length=3, border_mode='same', init='lecun_uniform'))
-                if (activationType == "LeakyReLU") :
-                    model.add(LeakyReLU(alpha=0.01))
-                else :
-                    model.add(Activation(activationType))
-            model.add(Flatten())
-            model.add(Dense(self.output_size, input_shape=(30,), init='lecun_uniform'))
-            model.add(Activation("linear"))
-        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
-        model.compile(loss="mse", optimizer=optimizer)
-        return model
-
+        self.model = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
+        self.targetModel = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
 
     def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, learningRate, bias):
         dropout = 0
         regularizationFactor = 0
         model = Sequential()
         if len(hiddenLayers) == 0: 
-            model.add(Dense(self.output_size, input_shape=(self.input_size,), init='lecun_uniform', bias=bias))
+            model.add(Dense(self.output_size, input_shape=(inputs,), init='lecun_uniform', bias=bias))
             model.add(Activation("linear"))
         else :
             if regularizationFactor > 0:
-                model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform', W_regularizer=l2(regularizationFactor),  bias=bias))
+                model.add(Dense(hiddenLayers[0], input_shape=(inputs,), init='lecun_uniform', W_regularizer=l2(regularizationFactor),  bias=bias))
             else:
-                model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform', bias=bias))
+                model.add(Dense(hiddenLayers[0], input_shape=(inputs,), init='lecun_uniform', bias=bias))
 
             if (activationType == "LeakyReLU") :
                 model.add(LeakyReLU(alpha=0.01))
@@ -196,32 +165,7 @@ class DeepQ:
                     model.add(Activation(activationType))
                 if dropout > 0:
                     model.add(Dropout(dropout))
-            model.add(Dense(self.output_size, init='lecun_uniform', bias=bias))
-            model.add(Activation("linear"))
-        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
-        model.compile(loss="mse", optimizer=optimizer)
-        return model
-
-    def createModel(self, inputs, outputs, hiddenLayers, activationType, learningRate):
-        model = Sequential()
-        if len(hiddenLayers) == 0: 
-            model.add(Dense(self.output_size, input_shape=(self.input_size,), init='lecun_uniform'))
-            model.add(Activation("linear"))
-        else :
-            model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform'))
-            if (activationType == "LeakyReLU") :
-                model.add(LeakyReLU(alpha=0.01))
-            else :
-                model.add(Activation(activationType))
-            
-            for index in range(1, len(hiddenLayers)-1):
-                layerSize = hiddenLayers[index]
-                model.add(Dense(layerSize, init='lecun_uniform'))
-                if (activationType == "LeakyReLU") :
-                    model.add(LeakyReLU(alpha=0.01))
-                else :
-                    model.add(Activation(activationType))
-            model.add(Dense(self.output_size, init='lecun_uniform'))
+            model.add(Dense(outputs, init='lecun_uniform', bias=bias))
             model.add(Activation("linear"))
         optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
         model.compile(loss="mse", optimizer=optimizer)
@@ -306,26 +250,25 @@ class DeepQ:
             return self.memory.getMemory(self.memory.getCurrentSize() - 1)
 
     def learnOnMiniBatch(self, miniBatchSize, useTargetNetwork=True):
-        if self.memory.getCurrentSize() > self.learnStart :
-            miniBatch = self.memory.getMiniBatch(miniBatchSize)
-            X_batch = np.empty((0,self.input_size), dtype = np.float64)
-            Y_batch = np.empty((0,self.output_size), dtype = np.float64)
-            for sample in miniBatch:
-                isFinal = sample['isFinal']
-                state = sample['state']
-                action = sample['action']
-                reward = sample['reward']
-                newState = sample['newState']
+        miniBatch = self.memory.getMiniBatch(miniBatchSize)
+        X_batch = np.empty((0,self.input_size), dtype = np.float64)
+        Y_batch = np.empty((0,self.output_size), dtype = np.float64)
+        for sample in miniBatch:
+            isFinal = sample['isFinal']
+            state = sample['state'].copy()
+            action = sample['action']
+            reward = sample['reward']
+            newState = sample['newState'].copy()
 
-                qValues = self.getQValues(state)
-                if useTargetNetwork:
-                    qValuesNewState = self.getTargetQValues(newState)
-                else :
-                    qValuesNewState = self.getQValues(newState)
-                targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
+            qValues = self.getQValues(state)
+            if useTargetNetwork:
+                qValuesNewState = self.getTargetQValues(newState)
+            else :
+                qValuesNewState = self.getQValues(newState)
+            targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
 
-                X_batch = np.append(X_batch, np.array([state.copy()]), axis=0)
-                Y_sample = qValues.copy()
-                Y_sample[action] = targetValue
-                Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
-            self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)
+            X_batch = np.append(X_batch, np.array([state]), axis=0)
+            Y_sample = qValues
+            Y_sample[action] = targetValue
+            Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
+        self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)

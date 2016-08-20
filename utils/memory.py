@@ -15,7 +15,7 @@ class Memory:
         indices = random.sample(np.arange(len(self.states)), min(size,len(self.states)) )
         miniBatch = []
         for index in indices:
-            miniBatch.append({'state': self.states[index],'action': self.actions[index], 'reward': self.rewards[index], 'newState': self.newStates[index], 'isFinal': self.finals[index]})
+            miniBatch.append(self.getMemory(index))
         return miniBatch
 
     def getCurrentSize(self) :
@@ -28,16 +28,16 @@ class Memory:
         if (self.currentPosition >= self.size - 1) :
             self.currentPosition = 0
         if (len(self.states) > self.size) :
-            self.states[self.currentPosition] = state
+            self.states[self.currentPosition] = state.copy()
             self.actions[self.currentPosition] = action
             self.rewards[self.currentPosition] = reward
-            self.newStates[self.currentPosition] = newState
+            self.newStates[self.currentPosition] = newState.copy()
             self.finals[self.currentPosition] = isFinal
         else :
-            self.states.append(state)
+            self.states.append(state.copy())
             self.actions.append(action)
             self.rewards.append(reward)
-            self.newStates.append(newState)
+            self.newStates.append(newState.copy())
             self.finals.append(isFinal)
         
         self.currentPosition += 1
