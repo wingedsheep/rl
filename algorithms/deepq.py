@@ -20,7 +20,7 @@ from rl.utils.memory import Memory
 
 defaultSettings = {
     'memorySize' : 100000,
-    'discountFactor' : 0.975,
+    'discountFactor' : 0.99,
     'learningRate' : 0.00025,
     'hiddenLayers' : [30,30,30],
     'bias' : True
@@ -41,15 +41,23 @@ defaultRunSettings = {
 class DeepQ:
     def __init__(
             self, 
-            env, 
+            env,
+            input_size = None,
+            output_size = None,
             memorySize = defaultSettings['memorySize'], 
             discountFactor = defaultSettings['discountFactor'], 
             learningRate = defaultSettings['learningRate'], 
             hiddenLayers = defaultSettings['hiddenLayers'], 
             bias = defaultSettings['bias']):
         self.env = env
-        self.input_size = len(env.observation_space.high)
-        self.output_size = env.action_space.n
+        if input_size == None:
+        	self.input_size = len(env.observation_space.high)
+        else :
+        	self.input_size = input_size
+        if output_size == None:
+        	self.output_size = env.action_space.n
+        else :
+        	self.output_size = output_size
         self.memory = Memory(memorySize)
         self.discountFactor = discountFactor
         self.learningRate = learningRate
@@ -61,6 +69,7 @@ class DeepQ:
             epochs, 
             steps, 
             api_key,
+            monitor = False,
             updateTargetNetwork = defaultRunSettings['updateTargetNetwork'], 
             explorationRate = defaultRunSettings['explorationRate'], 
             miniBatchSize = defaultRunSettings['miniBatchSize'], 
@@ -77,7 +86,7 @@ class DeepQ:
 
         stepCounter = 0
 
-        if experimentId != None:
+        if experimentId != None and monitor:
             self.env.monitor.start('tmp/'+experimentId, force = force)
 
         for epoch in xrange(epochs):
