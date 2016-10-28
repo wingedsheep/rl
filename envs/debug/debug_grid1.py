@@ -10,9 +10,9 @@ LEFT = 3
 
 MAPS = {
     "3x3": [
-        [{"r":-5, "f":True}, {"r":0, "f":False}, {"r":5, "f":True}],
-        [{"r":0, "f":False}, {"r":0, "f":False}, {"r":0, "f":False}],
-        [{"r":0, "f":False}, {"r":0, "f":False}, {"r":-5, "f":True}]
+        [{"r":-5.0, "f":True}, {"r":0.0, "f":False}, {"r":5.0, "f":True}],
+        [{"r":0.0, "f":False}, {"r":0.0, "f":False}, {"r":0.0, "f":False}],
+        [{"r":0.0, "f":False}, {"r":0.0, "f":False}, {"r":-5.0, "f":True}]
     ]
 }
 

@@ -22,7 +22,9 @@ defaultSettings = {
     'memorySize' : 100000,
     'discountFactor' : 0.99,
     'learningRate' : 0.00025,
+    'learningRatePrediction' : 0.00025,
     'hiddenLayers' : [30,30,30],
+    'hiddenLayersPrediction' : [30, 30, 30],
     'bias' : True
 }
 
@@ -30,7 +32,7 @@ defaultRunSettings = {
     'updateTargetNetwork' : 10000,
     'explorationRate' : 1,
     'miniBatchSize' : 36,
-    'learnStart' : 10000,
+    'learnStart' : 36,
     'renderPerXEpochs' : 1,
     'shouldRender' : True,
     'experimentId' : None,
@@ -38,30 +40,26 @@ defaultRunSettings = {
     'upload' : False
 }
 
-class DeepQ:
+class DeepQPredict:
     def __init__(
             self, 
-            env,
-            input_size = None,
-            output_size = None,
+            env, 
             memorySize = defaultSettings['memorySize'], 
             discountFactor = defaultSettings['discountFactor'], 
             learningRate = defaultSettings['learningRate'], 
+            learningRatePrediction = defaultSettings['learningRatePrediction'], 
             hiddenLayers = defaultSettings['hiddenLayers'], 
+            hiddenLayersPrediction = defaultSettings['hiddenLayersPrediction'], 
             bias = defaultSettings['bias']):
         self.env = env
-        if input_size == None:
-        	self.input_size = len(env.observation_space.high)
-        else :
-        	self.input_size = input_size
-        if output_size == None:
-        	self.output_size = env.action_space.n
-        else :
-        	self.output_size = output_size
+        self.input_size = len(env.observation_space.high)
+        self.output_size = env.action_space.n
         self.memory = Memory(memorySize)
         self.discountFactor = discountFactor
         self.learningRate = learningRate
+        self.learningRatePrediction = learningRatePrediction
         self.hiddenLayers = hiddenLayers
+        self.hiddenLayersPrediction = hiddenLayersPrediction
         self.bias = bias
         self.initNetworks(hiddenLayers)
 
@@ -69,7 +67,6 @@ class DeepQ:
             epochs, 
             steps, 
             api_key,
-            monitor = True,
             updateTargetNetwork = defaultRunSettings['updateTargetNetwork'], 
             explorationRate = defaultRunSettings['explorationRate'], 
             miniBatchSize = defaultRunSettings['miniBatchSize'], 
@@ -86,7 +83,7 @@ class DeepQ:
 
         stepCounter = 0
 
-        if experimentId != None and monitor:
+        if experimentId != None:
             self.env.monitor.start('tmp/'+experimentId, force = force)
 
         for epoch in xrange(epochs):
@@ -98,6 +95,9 @@ class DeepQ:
                 if epoch % renderPerXEpochs == 0 and shouldRender:
                     self.env.render()
                 qValues = self.getQValues(observation)
+
+                stateTree = self.predictStateTree(observation, 2)
+                print stateTree
 
                 action = self.selectAction(qValues, explorationRate)
 
@@ -113,7 +113,7 @@ class DeepQ:
                     else :
                         self.learnOnMiniBatch(miniBatchSize, True)
 
-                observation = newObservation.copy()
+                observation = newObservation
 
                 if done:
                     last100Scores[last100ScoresIndex] = totalReward
@@ -143,6 +143,7 @@ class DeepQ:
     def initNetworks(self, hiddenLayers):
         self.model = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
         self.targetModel = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
+        self.statePredictionModel = self.createRegularizedModel(self.input_size + 1, self.input_size, self.hiddenLayersPrediction, "relu", self.learningRatePrediction, self.bias)
 
     def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, learningRate, bias):
         dropout = 0
@@ -176,7 +177,7 @@ class DeepQ:
                     model.add(Dropout(dropout))
             model.add(Dense(outputs, init='lecun_uniform', bias=bias))
             model.add(Activation("linear"))
-        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06, clipvalue=0.5)
+        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
         model.compile(loss="mse", optimizer=optimizer)
         return model
 
@@ -208,6 +209,29 @@ class DeepQ:
 
     def getMaxIndex(self, qValues):
         return np.argmax(qValues)
+
+    def getStatePrediction(self, state, action):
+        state_action = state.copy()
+        state_action = np.append(state_action, action)
+        return self.statePredictionModel.predict(state_action.reshape(1, len(state_action)))
+
+    def predictStates(self, state):
+        nextStates = []
+        for a in xrange(self.output_size):
+            nextStates.append(self.getStatePrediction(state, a)[0])
+        return nextStates
+
+    def predictStateTree(self, state, depth):
+        nextStates = self.predictStates(state)
+        qValues = self.getQValues(state)
+        stateTree = []
+        if depth <= 1:
+            for action, nextState in enumerate(nextStates):
+                stateTree.append({"state": nextState, "value": qValues[action]})
+        else :
+            for action, nextState in enumerate(nextStates):
+                stateTree.append({"state": nextState, "value": qValues[action], "nextStates": self.predictStateTree(nextState, depth - 1)})
+        return stateTree
 
     # calculate the target function
     def calculateTarget(self, qValuesNewState, reward, isFinal):
@@ -262,6 +286,8 @@ class DeepQ:
         miniBatch = self.memory.getMiniBatch(miniBatchSize)
         X_batch = np.empty((0,self.input_size), dtype = np.float64)
         Y_batch = np.empty((0,self.output_size), dtype = np.float64)
+        X_batch_state = np.empty((0,self.input_size + 1), dtype = np.float64)
+        Y_batch_state = np.empty((0,self.input_size), dtype = np.float64)
         for sample in miniBatch:
             isFinal = sample['isFinal']
             state = sample['state'].copy()
@@ -276,11 +302,15 @@ class DeepQ:
                 qValuesNewState = self.getQValues(newState)
             targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
 
+            # Q model
             X_batch = np.append(X_batch, np.array([state]), axis=0)
             Y_sample = qValues
             Y_sample[action] = targetValue
             Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
-            if isFinal:
-            	X_batch = np.append(X_batch, np.array([newState]), axis=0)
-            	Y_batch = np.append(Y_batch, np.array([[0] * self.output_size]), axis=0)
+            # State model
+            state_action = state.copy()
+            state_action = np.append(state_action, action)
+            X_batch_state = np.append(X_batch_state, np.array([state_action]), axis=0)
+            Y_batch_state = np.append(Y_batch_state, np.array([newState]), axis=0)
         self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)
+        self.statePredictionModel.fit(X_batch_state, Y_batch_state, batch_size = len(miniBatch), nb_epoch = 1, verbose = 0)

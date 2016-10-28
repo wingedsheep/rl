@@ -20,7 +20,7 @@ from rl.utils.memory import Memory
 
 defaultSettings = {
     'memorySize' : 100000,
-    'discountFactor' : 0.99,
+    'discountFactor' : 0.975,
     'learningRate' : 0.00025,
     'hiddenLayers' : [30,30,30],
     'bias' : True
@@ -30,7 +30,7 @@ defaultRunSettings = {
     'updateTargetNetwork' : 10000,
     'explorationRate' : 1,
     'miniBatchSize' : 36,
-    'learnStart' : 10000,
+    'learnStart' : 36,
     'renderPerXEpochs' : 1,
     'shouldRender' : True,
     'experimentId' : None,
@@ -38,27 +38,18 @@ defaultRunSettings = {
     'upload' : False
 }
 
-class DeepQ:
+class Advantage:
     def __init__(
             self, 
-            env,
-            input_size = None,
-            output_size = None,
+            env, 
             memorySize = defaultSettings['memorySize'], 
             discountFactor = defaultSettings['discountFactor'], 
             learningRate = defaultSettings['learningRate'], 
             hiddenLayers = defaultSettings['hiddenLayers'], 
             bias = defaultSettings['bias']):
         self.env = env
-        if input_size == None:
-        	self.input_size = len(env.observation_space.high)
-        else :
-        	self.input_size = input_size
-        if output_size == None:
-        	self.output_size = env.action_space.n
-        else :
-        	self.output_size = output_size
-        self.memory = Memory(memorySize)
+        self.size_observation = len(env.observation_space.high)
+        self.size_action = env.action_space.n
         self.discountFactor = discountFactor
         self.learningRate = learningRate
         self.hiddenLayers = hiddenLayers
@@ -69,7 +60,6 @@ class DeepQ:
             epochs, 
             steps, 
             api_key,
-            monitor = True,
             updateTargetNetwork = defaultRunSettings['updateTargetNetwork'], 
             explorationRate = defaultRunSettings['explorationRate'], 
             miniBatchSize = defaultRunSettings['miniBatchSize'], 
@@ -79,41 +69,46 @@ class DeepQ:
             experimentId = defaultRunSettings['experimentId'], 
             force = defaultRunSettings['force'], 
             upload = defaultRunSettings['upload']):
-    
+
         last100Scores = [0] * 100
         last100ScoresIndex = 0
         last100Filled = False
 
-        stepCounter = 0
-
-        if experimentId != None and monitor:
+        if experimentId != None:
             self.env.monitor.start('tmp/'+experimentId, force = force)
 
         for epoch in xrange(epochs):
+            path = {}
+            path["actions"] = []
+            path["rewards"] = []
+            path["states"] = []
+            path["values"] = []
+            path["isDone"] = []
+
             observation = self.env.reset()
-            print explorationRate
             # number of timesteps
             totalReward = 0
             for t in xrange(steps):
                 if epoch % renderPerXEpochs == 0 and shouldRender:
                     self.env.render()
-                qValues = self.getQValues(observation)
 
-                action = self.selectAction(qValues, explorationRate)
+                policyValues = self.runModel(self.policyModel, observation)
+                # print policyValues
+                action = self.selectActionByProbability(policyValues, 1e-8)
+                # print "action: ",action
+
+                path["states"].append(observation)
+                path["actions"].append(action)
+                path["values"].append(self.runModel(self.valueModel, observation)[0])
 
                 newObservation, reward, done, info = self.env.step(action)
 
+                path["rewards"].append(reward)
+                path["isDone"].append(done)
+
                 totalReward += reward
 
-                self.addMemory(observation, action, reward, newObservation, done)
-
-                if stepCounter >= learnStart:
-                    if stepCounter <= updateTargetNetwork:
-                        self.learnOnMiniBatch(miniBatchSize, False)
-                    else :
-                        self.learnOnMiniBatch(miniBatchSize, True)
-
-                observation = newObservation.copy()
+                observation = newObservation
 
                 if done:
                     last100Scores[last100ScoresIndex] = totalReward
@@ -127,24 +122,17 @@ class DeepQ:
                         print "Episode ",epoch," finished after {} timesteps".format(t+1)," with total reward",totalReward," last 100 average: ",(sum(last100Scores)/len(last100Scores))
                     break
 
-                stepCounter += 1
-                if stepCounter % updateTargetNetwork == 0:
-                    self.updateTargetNetwork()
-                    print "updating target network"
-
-            explorationRate *= 0.995
-            # explorationRate -= (2.0/epochs)
-            explorationRate = max (0.05, explorationRate)
+            self.learn(path, observation)
 
         self.env.monitor.close()
         if upload:
             gym.upload('/tmp/'+experimentId, api_key=api_key)
    
     def initNetworks(self, hiddenLayers):
-        self.model = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
-        self.targetModel = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
+        self.valueModel = self.createRegularizedModel(self.size_observation, 1, hiddenLayers, "relu", "linear", "mse", 0.1 , self.bias)
+        self.policyModel = self.createRegularizedModel(self.size_observation, self.size_action, hiddenLayers, "relu", "softmax", "mse", 0.0001, self.bias)
 
-    def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, learningRate, bias):
+    def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, outputType, loss, learningRate, bias):
         dropout = 0
         regularizationFactor = 0
         model = Sequential()
@@ -175,9 +163,9 @@ class DeepQ:
                 if dropout > 0:
                     model.add(Dropout(dropout))
             model.add(Dense(outputs, init='lecun_uniform', bias=bias))
-            model.add(Activation("linear"))
-        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06, clipvalue=0.5)
-        model.compile(loss="mse", optimizer=optimizer)
+            model.add(Activation(outputType))
+        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
+        model.compile(loss=loss, optimizer=optimizer)
         return model
 
     def printNetwork(self):
@@ -195,12 +183,8 @@ class DeepQ:
         self.backupNetwork(self.model, self.targetModel)
 
     # predict Q values for all the actions
-    def getQValues(self, state):
-        predicted = self.model.predict(state.reshape(1,len(state)))
-        return predicted[0]
-
-    def getTargetQValues(self, state):
-        predicted = self.targetModel.predict(state.reshape(1,len(state)))
+    def runModel(self, model, state):
+        predicted = model.predict(state.reshape(1,len(state)))
         return predicted[0]
 
     def getMaxQ(self, qValues):
@@ -208,13 +192,6 @@ class DeepQ:
 
     def getMaxIndex(self, qValues):
         return np.argmax(qValues)
-
-    # calculate the target function
-    def calculateTarget(self, qValuesNewState, reward, isFinal):
-        if isFinal:
-            return reward
-        else : 
-            return reward + self.discountFactor * self.getMaxQ(qValuesNewState)
 
     # select the action with the highest Q value
     def selectAction(self, qValues, explorationRate):
@@ -251,36 +228,60 @@ class DeepQ:
                 return i
             i += 1
 
-    def addMemory(self, state, action, reward, newState, isFinal):
-        self.memory.addMemory(state, action, reward, newState, isFinal)
+    def learn(self, path, lastState):
+        X_batch_value = np.empty((0,self.size_observation), dtype = np.float64)
+        Y_batch_value = np.empty((0,1), dtype = np.float64)
 
-    def learnOnLastState(self):
-        if self.memory.getCurrentSize() >= 1:
-            return self.memory.getMemory(self.memory.getCurrentSize() - 1)
+        X_batch_policy = np.empty((0,self.size_observation), dtype = np.float64)
+        Y_batch_policy = np.empty((0,self.size_action), dtype = np.float64)
 
-    def learnOnMiniBatch(self, miniBatchSize, useTargetNetwork=True):
-        miniBatch = self.memory.getMiniBatch(miniBatchSize)
-        X_batch = np.empty((0,self.input_size), dtype = np.float64)
-        Y_batch = np.empty((0,self.output_size), dtype = np.float64)
-        for sample in miniBatch:
-            isFinal = sample['isFinal']
-            state = sample['state'].copy()
-            action = sample['action']
-            reward = sample['reward']
-            newState = sample['newState'].copy()
+        actions = path["actions"]
+        rewards = path["rewards"]
+        states = path["states"]
+        values = path["values"]
+        isDone = path["isDone"]
 
-            qValues = self.getQValues(state)
-            if useTargetNetwork:
-                qValuesNewState = self.getTargetQValues(newState)
-            else :
-                qValuesNewState = self.getQValues(newState)
-            targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
+        print "expected value:",values[0]
+        actions.reverse()
+        rewards.reverse()
+        states.reverse()
+        values.reverse()
+        isDone.reverse()
 
-            X_batch = np.append(X_batch, np.array([state]), axis=0)
-            Y_sample = qValues
-            Y_sample[action] = targetValue
-            Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
-            if isFinal:
-            	X_batch = np.append(X_batch, np.array([newState]), axis=0)
-            	Y_batch = np.append(Y_batch, np.array([[0] * self.output_size]), axis=0)
-        self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)
+        path["returns"] = []
+        path["advantage"] = []
+
+        R = 0.0
+        if isDone[0] == False:
+            R = self.runModel(self.valueModel, lastState)
+        for (ai, ri, si, vi, di) in zip (actions, rewards, states, values, isDone):
+            R = ri + self.discountFactor * R
+            td = R - vi
+            a = np.zeros(self.size_action)
+            a[ai] = 1
+            path["returns"] = R
+            path["advantage"] = td
+
+            X_batch_value = np.append(X_batch_value, np.array([si]), axis=0)
+            Y_batch_value = np.append(Y_batch_value, np.array([[R]]), axis=0)
+
+            policy = self.runModel(self.policyModel, si)
+            # print policy
+            # print "action:",ai
+            # print "td:",td
+            change = min(1.0, td / vi)
+            change_others = -((self.size_action -1) * change)
+            policy = [x+change_others for x in policy]
+            policy[ai] += change-change_others
+            # print policy
+
+            X_batch_policy = np.append(X_batch_policy, np.array([si]), axis=0)
+            Y_batch_policy = np.append(Y_batch_policy, np.array([policy]), axis=0)
+
+        self.valueModel.fit(X_batch_value, Y_batch_value, batch_size = len(path["actions"]), nb_epoch=1, verbose = 0)
+        self.policyModel.fit(X_batch_policy, Y_batch_policy, batch_size = len(path["actions"]), nb_epoch=1, verbose = 0)
+
+
+
+
+        

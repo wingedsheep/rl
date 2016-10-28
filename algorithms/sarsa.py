@@ -30,7 +30,7 @@ defaultRunSettings = {
     'updateTargetNetwork' : 10000,
     'explorationRate' : 1,
     'miniBatchSize' : 36,
-    'learnStart' : 10000,
+    'learnStart' : 36,
     'renderPerXEpochs' : 1,
     'shouldRender' : True,
     'experimentId' : None,
@@ -38,7 +38,7 @@ defaultRunSettings = {
     'upload' : False
 }
 
-class DeepQ:
+class Sarsa:
     def __init__(
             self, 
             env,
@@ -91,21 +91,25 @@ class DeepQ:
 
         for epoch in xrange(epochs):
             observation = self.env.reset()
+
+            qValues = self.getQValues(observation)
+            action = self.selectAction(qValues, explorationRate)
+
             print explorationRate
             # number of timesteps
             totalReward = 0
             for t in xrange(steps):
                 if epoch % renderPerXEpochs == 0 and shouldRender:
                     self.env.render()
-                qValues = self.getQValues(observation)
-
-                action = self.selectAction(qValues, explorationRate)
 
                 newObservation, reward, done, info = self.env.step(action)
+                
+                qValues = self.getQValues(observation)
+                newAction = self.selectAction(qValues, explorationRate)
 
                 totalReward += reward
 
-                self.addMemory(observation, action, reward, newObservation, done)
+                self.addMemory(observation, action, reward, newObservation, newAction, done)
 
                 if stepCounter >= learnStart:
                     if stepCounter <= updateTargetNetwork:
@@ -114,6 +118,7 @@ class DeepQ:
                         self.learnOnMiniBatch(miniBatchSize, True)
 
                 observation = newObservation.copy()
+                action = newAction
 
                 if done:
                     last100Scores[last100ScoresIndex] = totalReward
@@ -176,7 +181,7 @@ class DeepQ:
                     model.add(Dropout(dropout))
             model.add(Dense(outputs, init='lecun_uniform', bias=bias))
             model.add(Activation("linear"))
-        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06, clipvalue=0.5)
+        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
         model.compile(loss="mse", optimizer=optimizer)
         return model
 
@@ -210,11 +215,11 @@ class DeepQ:
         return np.argmax(qValues)
 
     # calculate the target function
-    def calculateTarget(self, qValuesNewState, reward, isFinal):
+    def calculateTarget(self, qValuesNewState, newAction, reward, isFinal):
         if isFinal:
             return reward
-        else : 
-            return reward + self.discountFactor * self.getMaxQ(qValuesNewState)
+        else :
+            return reward + self.discountFactor * qValuesNewState[newAction]
 
     # select the action with the highest Q value
     def selectAction(self, qValues, explorationRate):
@@ -251,8 +256,8 @@ class DeepQ:
                 return i
             i += 1
 
-    def addMemory(self, state, action, reward, newState, isFinal):
-        self.memory.addMemory(state, action, reward, newState, isFinal)
+    def addMemory(self, state, action, reward, newState, newAction, isFinal):
+        self.memory.addMemoryWithNewAction(state, action, reward, newState, newAction, isFinal)
 
     def learnOnLastState(self):
         if self.memory.getCurrentSize() >= 1:
@@ -268,13 +273,14 @@ class DeepQ:
             action = sample['action']
             reward = sample['reward']
             newState = sample['newState'].copy()
+            newAction = sample['newAction']
 
             qValues = self.getQValues(state)
             if useTargetNetwork:
                 qValuesNewState = self.getTargetQValues(newState)
             else :
                 qValuesNewState = self.getQValues(newState)
-            targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
+            targetValue = self.calculateTarget(qValuesNewState, newAction, reward, isFinal)
 
             X_batch = np.append(X_batch, np.array([state]), axis=0)
             Y_sample = qValues

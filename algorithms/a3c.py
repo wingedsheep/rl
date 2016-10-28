@@ -20,7 +20,7 @@ from rl.utils.memory import Memory
 
 defaultSettings = {
     'memorySize' : 100000,
-    'discountFactor' : 0.99,
+    'discountFactor' : 0.975,
     'learningRate' : 0.00025,
     'hiddenLayers' : [30,30,30],
     'bias' : True
@@ -30,7 +30,7 @@ defaultRunSettings = {
     'updateTargetNetwork' : 10000,
     'explorationRate' : 1,
     'miniBatchSize' : 36,
-    'learnStart' : 10000,
+    'learnStart' : 36,
     'renderPerXEpochs' : 1,
     'shouldRender' : True,
     'experimentId' : None,
@@ -41,24 +41,15 @@ defaultRunSettings = {
 class DeepQ:
     def __init__(
             self, 
-            env,
-            input_size = None,
-            output_size = None,
+            env, 
             memorySize = defaultSettings['memorySize'], 
             discountFactor = defaultSettings['discountFactor'], 
             learningRate = defaultSettings['learningRate'], 
             hiddenLayers = defaultSettings['hiddenLayers'], 
             bias = defaultSettings['bias']):
         self.env = env
-        if input_size == None:
-        	self.input_size = len(env.observation_space.high)
-        else :
-        	self.input_size = input_size
-        if output_size == None:
-        	self.output_size = env.action_space.n
-        else :
-        	self.output_size = output_size
-        self.memory = Memory(memorySize)
+        self.size_observation = len(env.observation_space.high)
+        self.size_action = env.action_space.n
         self.discountFactor = discountFactor
         self.learningRate = learningRate
         self.hiddenLayers = hiddenLayers
@@ -69,7 +60,6 @@ class DeepQ:
             epochs, 
             steps, 
             api_key,
-            monitor = True,
             updateTargetNetwork = defaultRunSettings['updateTargetNetwork'], 
             explorationRate = defaultRunSettings['explorationRate'], 
             miniBatchSize = defaultRunSettings['miniBatchSize'], 
@@ -79,14 +69,15 @@ class DeepQ:
             experimentId = defaultRunSettings['experimentId'], 
             force = defaultRunSettings['force'], 
             upload = defaultRunSettings['upload']):
-    
+
+        self.learnStart = learnStart
+
+        stepCounter = 0
         last100Scores = [0] * 100
         last100ScoresIndex = 0
         last100Filled = False
 
-        stepCounter = 0
-
-        if experimentId != None and monitor:
+        if experimentId != None:
             self.env.monitor.start('tmp/'+experimentId, force = force)
 
         for epoch in xrange(epochs):
@@ -107,13 +98,13 @@ class DeepQ:
 
                 self.addMemory(observation, action, reward, newObservation, done)
 
-                if stepCounter >= learnStart:
+                if stepCounter >= self.learnStart:
                     if stepCounter <= updateTargetNetwork:
                         self.learnOnMiniBatch(miniBatchSize, False)
                     else :
                         self.learnOnMiniBatch(miniBatchSize, True)
 
-                observation = newObservation.copy()
+                observation = newObservation
 
                 if done:
                     last100Scores[last100ScoresIndex] = totalReward
@@ -141,21 +132,21 @@ class DeepQ:
             gym.upload('/tmp/'+experimentId, api_key=api_key)
    
     def initNetworks(self, hiddenLayers):
-        self.model = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
-        self.targetModel = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
+        self.valueModel = self.createRegularizedModel(self.size_observation, self.output_size, hiddenLayers, "relu", "linear", "mse", self.learningRate, self.bias)
+        self.policyModel = self.createRegularizedModel(self.size_observation, self.action, hiddenLayers, "relu", "softmax", policy_loss_function, self.learningRate, self.bias)
 
-    def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, learningRate, bias):
+    def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, outputType, learningRate, bias):
         dropout = 0
         regularizationFactor = 0
         model = Sequential()
         if len(hiddenLayers) == 0: 
-            model.add(Dense(self.output_size, input_shape=(inputs,), init='lecun_uniform', bias=bias))
+            model.add(Dense(self.output_size, input_shape=(self.input_size,), init='lecun_uniform', bias=bias))
             model.add(Activation("linear"))
         else :
             if regularizationFactor > 0:
-                model.add(Dense(hiddenLayers[0], input_shape=(inputs,), init='lecun_uniform', W_regularizer=l2(regularizationFactor),  bias=bias))
+                model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform', W_regularizer=l2(regularizationFactor),  bias=bias))
             else:
-                model.add(Dense(hiddenLayers[0], input_shape=(inputs,), init='lecun_uniform', bias=bias))
+                model.add(Dense(hiddenLayers[0], input_shape=(self.input_size,), init='lecun_uniform', bias=bias))
 
             if (activationType == "LeakyReLU") :
                 model.add(LeakyReLU(alpha=0.01))
@@ -174,11 +165,16 @@ class DeepQ:
                     model.add(Activation(activationType))
                 if dropout > 0:
                     model.add(Dropout(dropout))
-            model.add(Dense(outputs, init='lecun_uniform', bias=bias))
-            model.add(Activation("linear"))
-        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06, clipvalue=0.5)
+            model.add(Dense(self.output_size, init='lecun_uniform', bias=bias))
+            model.add(Activation(outputType))
+        optimizer = optimizers.RMSprop(lr=learningRate, rho=0.9, epsilon=1e-06)
         model.compile(loss="mse", optimizer=optimizer)
         return model
+
+    def policy_loss_function(y_true, y_pred):
+        entropy = -np.sum(np.multiply(y_pred, np.log(y_pred)))
+        loss = -np.sum()
+
 
     def printNetwork(self):
         i = 0
@@ -259,28 +255,26 @@ class DeepQ:
             return self.memory.getMemory(self.memory.getCurrentSize() - 1)
 
     def learnOnMiniBatch(self, miniBatchSize, useTargetNetwork=True):
-        miniBatch = self.memory.getMiniBatch(miniBatchSize)
-        X_batch = np.empty((0,self.input_size), dtype = np.float64)
-        Y_batch = np.empty((0,self.output_size), dtype = np.float64)
-        for sample in miniBatch:
-            isFinal = sample['isFinal']
-            state = sample['state'].copy()
-            action = sample['action']
-            reward = sample['reward']
-            newState = sample['newState'].copy()
+        if self.memory.getCurrentSize() > self.learnStart :
+            miniBatch = self.memory.getMiniBatch(miniBatchSize)
+            X_batch = np.empty((0,self.input_size), dtype = np.float64)
+            Y_batch = np.empty((0,self.output_size), dtype = np.float64)
+            for sample in miniBatch:
+                isFinal = sample['isFinal']
+                state = sample['state']
+                action = sample['action']
+                reward = sample['reward']
+                newState = sample['newState']
 
-            qValues = self.getQValues(state)
-            if useTargetNetwork:
-                qValuesNewState = self.getTargetQValues(newState)
-            else :
-                qValuesNewState = self.getQValues(newState)
-            targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
+                qValues = self.getQValues(state)
+                if useTargetNetwork:
+                    qValuesNewState = self.getTargetQValues(newState)
+                else :
+                    qValuesNewState = self.getQValues(newState)
+                targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
 
-            X_batch = np.append(X_batch, np.array([state]), axis=0)
-            Y_sample = qValues
-            Y_sample[action] = targetValue
-            Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
-            if isFinal:
-            	X_batch = np.append(X_batch, np.array([newState]), axis=0)
-            	Y_batch = np.append(Y_batch, np.array([[0] * self.output_size]), axis=0)
-        self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)
+                X_batch = np.append(X_batch, np.array([state.copy()]), axis=0)
+                Y_sample = qValues.copy()
+                Y_sample[action] = targetValue
+                Y_batch = np.append(Y_batch, np.array([Y_sample]), axis=0)
+            self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)

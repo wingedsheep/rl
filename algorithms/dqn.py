@@ -13,6 +13,7 @@ from keras.regularizers import l2
 
 # import other stuff
 import gym
+# from gym.monitoring.live_plot import LivePlot
 import random
 import numpy as np
 
@@ -38,7 +39,7 @@ defaultRunSettings = {
     'upload' : False
 }
 
-class DeepQ:
+class DQN:
     def __init__(
             self, 
             env,
@@ -87,7 +88,9 @@ class DeepQ:
         stepCounter = 0
 
         if experimentId != None and monitor:
-            self.env.monitor.start('tmp/'+experimentId, force = force)
+            outdir = 'tmp/'+experimentId
+            self.env.monitor.start(outdir, force = force)
+            # plotter = LivePlot(outdir)
 
         for epoch in xrange(epochs):
             observation = self.env.reset()
@@ -95,9 +98,16 @@ class DeepQ:
             # number of timesteps
             totalReward = 0
             for t in xrange(steps):
+                # plotter.plot()
+
+                qValues1 = self.getQValues(observation, self.model1)
+                qValues2 = self.getQValues(observation, self.model2)
+                qValues = np.add(qValues1, qValues2)
+
                 if epoch % renderPerXEpochs == 0 and shouldRender:
                     self.env.render()
-                qValues = self.getQValues(observation)
+                    print (qValues1)
+                    print (qValues2)
 
                 action = self.selectAction(qValues, explorationRate)
 
@@ -108,10 +118,7 @@ class DeepQ:
                 self.addMemory(observation, action, reward, newObservation, done)
 
                 if stepCounter >= learnStart:
-                    if stepCounter <= updateTargetNetwork:
-                        self.learnOnMiniBatch(miniBatchSize, False)
-                    else :
-                        self.learnOnMiniBatch(miniBatchSize, True)
+                    self.learnOnMiniBatch(miniBatchSize)
 
                 observation = newObservation.copy()
 
@@ -128,21 +135,17 @@ class DeepQ:
                     break
 
                 stepCounter += 1
-                if stepCounter % updateTargetNetwork == 0:
-                    self.updateTargetNetwork()
-                    print "updating target network"
-
-            explorationRate *= 0.995
-            # explorationRate -= (2.0/epochs)
-            explorationRate = max (0.05, explorationRate)
+            if stepCounter >= learnStart:
+                explorationRate *= 0.995
+                explorationRate = max (0.05, explorationRate)
 
         self.env.monitor.close()
         if upload:
             gym.upload('/tmp/'+experimentId, api_key=api_key)
    
     def initNetworks(self, hiddenLayers):
-        self.model = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
-        self.targetModel = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
+        self.model1 = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
+        self.model2 = self.createRegularizedModel(self.input_size, self.output_size, hiddenLayers, "relu", self.learningRate, self.bias)
 
     def createRegularizedModel(self, inputs, outputs, hiddenLayers, activationType, learningRate, bias):
         dropout = 0
@@ -180,27 +183,9 @@ class DeepQ:
         model.compile(loss="mse", optimizer=optimizer)
         return model
 
-    def printNetwork(self):
-        i = 0
-        for layer in self.model.layers:
-            weights = layer.get_weights()
-            print "layer ",i,": ",weights
-            i += 1
-
-    def backupNetwork(self, model, backup):
-        weights = model.get_weights()
-        backup.set_weights(weights)
-
-    def updateTargetNetwork(self):
-        self.backupNetwork(self.model, self.targetModel)
-
     # predict Q values for all the actions
-    def getQValues(self, state):
-        predicted = self.model.predict(state.reshape(1,len(state)))
-        return predicted[0]
-
-    def getTargetQValues(self, state):
-        predicted = self.targetModel.predict(state.reshape(1,len(state)))
+    def getQValues(self, state, model):
+        predicted = model.predict(state.reshape(1,len(state)))
         return predicted[0]
 
     def getMaxQ(self, qValues):
@@ -225,43 +210,14 @@ class DeepQ:
             action = self.getMaxIndex(qValues)
         return action
 
-    def selectActionByProbability(self, qValues, bias):
-        qValueSum = 0
-        shiftBy = 0
-        for value in qValues:
-            if value + shiftBy < 0:
-                shiftBy = - (value + shiftBy)
-        shiftBy += 1e-06
-
-        for value in qValues:
-            qValueSum += (value + shiftBy) ** bias
-
-        probabilitySum = 0
-        qValueProbabilities = []
-        for value in qValues:
-            probability = ((value + shiftBy) ** bias) / float(qValueSum)
-            qValueProbabilities.append(probability + probabilitySum)
-            probabilitySum += probability
-        qValueProbabilities[len(qValueProbabilities) - 1] = 1
-
-        rand = random.random()
-        i = 0
-        for value in qValueProbabilities:
-            if (rand <= value):
-                return i
-            i += 1
-
     def addMemory(self, state, action, reward, newState, isFinal):
         self.memory.addMemory(state, action, reward, newState, isFinal)
 
-    def learnOnLastState(self):
-        if self.memory.getCurrentSize() >= 1:
-            return self.memory.getMemory(self.memory.getCurrentSize() - 1)
-
-    def learnOnMiniBatch(self, miniBatchSize, useTargetNetwork=True):
+    def learnOnMiniBatch(self, miniBatchSize):
         miniBatch = self.memory.getMiniBatch(miniBatchSize)
         X_batch = np.empty((0,self.input_size), dtype = np.float64)
         Y_batch = np.empty((0,self.output_size), dtype = np.float64)
+        randNr = random.random()
         for sample in miniBatch:
             isFinal = sample['isFinal']
             state = sample['state'].copy()
@@ -269,11 +225,12 @@ class DeepQ:
             reward = sample['reward']
             newState = sample['newState'].copy()
 
-            qValues = self.getQValues(state)
-            if useTargetNetwork:
-                qValuesNewState = self.getTargetQValues(newState)
+            if randNr < 0.5:
+                qValues = self.getQValues(state, self.model1)
+                qValuesNewState = self.getQValues(state, self.model2)
             else :
-                qValuesNewState = self.getQValues(newState)
+                qValues = self.getQValues(state, self.model2)
+                qValuesNewState = self.getQValues(state, self.model1)
             targetValue = self.calculateTarget(qValuesNewState, reward, isFinal)
 
             X_batch = np.append(X_batch, np.array([state]), axis=0)
@@ -283,4 +240,9 @@ class DeepQ:
             if isFinal:
             	X_batch = np.append(X_batch, np.array([newState]), axis=0)
             	Y_batch = np.append(Y_batch, np.array([[0] * self.output_size]), axis=0)
-        self.model.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)
+        if randNr < 0.5:
+            self.model1.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)
+        else :
+            self.model2.fit(X_batch, Y_batch, batch_size = len(miniBatch), nb_epoch=1, verbose = 0)
+
+
